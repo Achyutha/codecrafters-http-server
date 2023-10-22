@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::from_utf8};
 use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 enum Verb {
     Get
 }
@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn process_request(data: &str) -> &str {
+fn process_request(data: &str) -> String {
     let split: Vec<_> = data.split("\r\n").collect();
 
     if split.is_empty() {
@@ -72,9 +72,18 @@ fn process_request(data: &str) -> &str {
 
     let request = HttpRequestLine::try_from(header).unwrap();
 
-    match (request.verb, request.path.as_str()) {
-        (Verb::Get, "/") => "HTTP/1.1 200 OK\r\n\r\n200 OK",
-        _ => "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found"
+    // NOTE: The code only supports HTTP::Get for now!
+    if request.verb != Verb::Get {
+        return "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string();
+    }
+
+    if request.path.starts_with("/echo/") {
+        let data = request.path.strip_prefix("/echo/").unwrap();
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", data.len(), data.clone())
+    } else if request.path == "/" {
+        "HTTP/1.1 200 OK\r\n\r\n200 OK".to_string()
+    } else {
+        "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
     }
 }
 
