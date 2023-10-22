@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::from_utf8};
+use std::{fmt::Display, str::from_utf8, collections::HashMap};
 use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}};
 
 #[derive(Debug, PartialEq)]
@@ -24,16 +24,36 @@ impl TryFrom<&str> for Verb {
     }
 }
 
-struct HttpRequestLine {
+#[derive(Debug)]
+struct HttpRequest {
     path: String,
-    verb: Verb
+    verb: Verb,
+    headers: HashMap<String, String>
 }
 
-impl TryFrom<&str> for HttpRequestLine {
+impl Display for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let data = format!("------------\nREQUEST:\nHTTP: {}\nPATH: {}\nHEADERS:\n{:#?}\n------------", self.verb, self.path, self.headers);
+        write!(f, "{}", data)
+    }
+}
+
+impl TryFrom<Vec<&str>> for HttpRequest {
     type Error = anyhow::Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        let stripped = value.strip_suffix("HTTP/1.1");
+    fn try_from(value: Vec<&str>) -> Result<Self, Self::Error> {
+        let payload = value[0];
+        let stripped = payload.strip_suffix("HTTP/1.1");
+        let mut headers = HashMap::new();
+
+        for header in value.into_iter().skip(1) {
+            let parts: Vec<_> = header.split(": ").collect();
+            if parts.len() != 2 {
+                return Err(anyhow::anyhow!("Unable to parse the HTTP Header - {:?}", parts));
+            }
+            headers.insert(parts[0].to_string(), parts[1].to_string());
+        }
+
         if stripped.is_none() {
             return Err(anyhow::anyhow!("Protocol doesn't match"))
         }
@@ -48,7 +68,7 @@ impl TryFrom<&str> for HttpRequestLine {
 
         let path = components[1].to_string();
 
-        Ok(HttpRequestLine {verb, path})
+        Ok(HttpRequest {verb, path, headers})
     }
 }
 
@@ -62,15 +82,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn process_request(data: &str) -> String {
-    let split: Vec<_> = data.split("\r\n").collect();
+    let raw_request: Vec<_> = data.split("\r\n").filter(|x| !x.is_empty()).collect();
 
-    if split.is_empty() {
-        eprint!("Unable to parse the header: {:?}", data);
+    if raw_request.is_empty() {
+        eprint!("Unable to parse the payload: {:?}", data);
     }
 
-    let header = split[0];
+    let request = HttpRequest::try_from(raw_request).unwrap();
 
-    let request = HttpRequestLine::try_from(header).unwrap();
+    println!("\n{}", request);
 
     // NOTE: The code only supports HTTP::Get for now!
     if request.verb != Verb::Get {
@@ -80,6 +100,9 @@ fn process_request(data: &str) -> String {
     if request.path.starts_with("/echo/") {
         let data = request.path.strip_prefix("/echo/").unwrap();
         format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", data.len(), data.clone())
+    } else if request.path == "/user-agent" {
+        let user_agent = request.headers.get("User-Agent").unwrap();
+        format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", user_agent.len(), user_agent.clone())
     } else if request.path == "/" {
         "HTTP/1.1 200 OK\r\n\r\n200 OK".to_string()
     } else {
