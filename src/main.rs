@@ -90,8 +90,6 @@ fn process_request(data: &str) -> String {
 
     let request = HttpRequest::try_from(raw_request).unwrap();
 
-    println!("\n{}", request);
-
     // NOTE: The code only supports HTTP::Get for now!
     if request.verb != Verb::Get {
         return "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string();
