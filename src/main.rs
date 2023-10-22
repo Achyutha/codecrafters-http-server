@@ -1,20 +1,17 @@
-use tokio::net::TcpListener;
+use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("Logs from your program will appear here!");
-
     let listener = TcpListener::bind("127.0.0.1:4221").await.unwrap();
     loop {
-        match listener.accept().await {
-            Ok(_) => {
-                println!("acceped new connection");
-            },
-            Err(e) => {
-                println!("error: {}", e);
-            }
-        };
+        let (mut socket, _) = listener.accept().await.unwrap();
+
+        process_socket(&mut socket).await;
     }
 }
 
 
+async fn process_socket(socket: &mut TcpStream) {
+    socket.read(&mut [0; 128]).await.unwrap();
+    socket.write(b"HTTP/1.1 200 OK\r\n\r\n").await.unwrap();
+}
