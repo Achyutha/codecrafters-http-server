@@ -3,13 +3,15 @@ use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}, fs
 
 #[derive(Debug, PartialEq)]
 enum Verb {
-    Get
+    Get,
+    Post
 }
 
 impl Display for Verb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Verb::Get => write!(f, "GET")
+            Verb::Get => write!(f, "GET"),
+            Verb::Post => write!(f, "POST")
         }
     }
 }
@@ -19,6 +21,7 @@ impl TryFrom<&str> for Verb {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
             "GET" => Ok(Verb::Get),
+            "POST" => Ok(Verb::Post),
             _ => Err(anyhow::anyhow!(format!("Unable to parse the Http Verb {:?}", value)))
         }
     }
@@ -28,7 +31,8 @@ impl TryFrom<&str> for Verb {
 struct HttpRequest {
     path: String,
     verb: Verb,
-    headers: HashMap<String, String>
+    headers: HashMap<String, String>,
+    body: Option<String>
 }
 
 impl Display for HttpRequest {
@@ -42,24 +46,29 @@ impl TryFrom<Vec<&str>> for HttpRequest {
     type Error = anyhow::Error;
 
     fn try_from(value: Vec<&str>) -> Result<Self, Self::Error> {
+        let mut headers = HashMap::new();
+        let mut body = None;
+
         let payload = value[0];
         let stripped = payload.strip_suffix("HTTP/1.1");
-        let mut headers = HashMap::new();
-
-        for header in value.into_iter().skip(1) {
-            let parts: Vec<_> = header.split(": ").collect();
-            if parts.len() != 2 {
-                return Err(anyhow::anyhow!("Unable to parse the HTTP Header - {:?}", parts));
-            }
-            headers.insert(parts[0].to_string(), parts[1].to_string());
-        }
 
         if stripped.is_none() {
             return Err(anyhow::anyhow!("Protocol doesn't match"))
         }
+
+        for row in value.clone().into_iter().filter(|x| x.contains(":")).skip(1) {
+            let parts: Vec<_> = row.split(": ").collect();
+            if parts.len() == 2 {
+                headers.insert(parts[0].to_string(), parts[1].to_string());
+            }
+        }
+
+        if !value.last().unwrap().contains(": ") {
+            body = Some(value.last().unwrap().to_string());
+        }
+
         let value = stripped.unwrap().trim().to_string();
         let components: Vec<&str> = value.splitn(2, ' ').collect();
-
         if components.len() != 2 {
             return Err(anyhow::anyhow!("Something went wrong parsing the header components: {:?}", components))
         }
@@ -68,7 +77,7 @@ impl TryFrom<Vec<&str>> for HttpRequest {
 
         let path = components[1].to_string();
 
-        Ok(HttpRequest {verb, path, headers})
+        Ok(HttpRequest {verb, path, headers, body})
     }
 }
 
@@ -95,15 +104,10 @@ async fn process_request(data: &str, dir: Option<String>) -> String {
     let raw_request: Vec<_> = data.split("\r\n").filter(|x| !x.is_empty()).collect();
 
     if raw_request.is_empty() {
-        eprint!("Unable to parse the payload: {:?}", data);
+        eprintln!("Unable to parse the payload: {:?}", data);
     }
 
     let request = HttpRequest::try_from(raw_request).unwrap();
-
-    // NOTE: The code only supports HTTP::Get for now!
-    if request.verb != Verb::Get {
-        return "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string();
-    }
 
     match (request.verb, request.path.as_str()) {
         (Verb::Get, "/") => {
@@ -131,6 +135,17 @@ async fn process_request(data: &str, dir: Option<String>) -> String {
                         "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
                     }
                 }
+            } else {
+                "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
+            }
+        }
+        (Verb::Post, file_path) if file_path.starts_with("/files") => {
+            let file_name = request.path.strip_prefix("/files/").unwrap();
+            if let Some(dir) = dir {
+                let file_path = PathBuf::from_iter([dir.as_str(), file_name]);
+                let mut file = File::create(file_path).await.unwrap();
+                _ = file.write_all(request.body.unwrap().as_bytes()).await;
+                "HTTP/1.1 201 Created\r\n\r\n".to_string()
             } else {
                 "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
             }
