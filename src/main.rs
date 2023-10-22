@@ -77,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:4221").await.unwrap();
     loop {
         let (mut socket, _) = listener.accept().await.unwrap();
-        process_stream(&mut socket).await;
+        tokio::spawn(async move {
+            process_stream(&mut socket).await;
+        });
     }
 }
 
