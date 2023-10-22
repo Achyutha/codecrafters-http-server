@@ -1,5 +1,5 @@
-use std::{fmt::Display, str::from_utf8, collections::HashMap};
-use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}};
+use std::{fmt::Display, str::from_utf8, collections::HashMap, env, path::PathBuf};
+use tokio::{net::{TcpListener, TcpStream}, io::{AsyncWriteExt, AsyncReadExt}, fs::File};
 
 #[derive(Debug, PartialEq)]
 enum Verb {
@@ -74,16 +74,24 @@ impl TryFrom<Vec<&str>> for HttpRequest {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let args: Vec<_> = env::args().collect();
+    let dir = if args.len() > 2 {
+        assert_eq!(args[1].as_str(), "--directory");
+        Some(args[2].clone())
+    } else {
+        None
+    };
     let listener = TcpListener::bind("127.0.0.1:4221").await.unwrap();
     loop {
         let (mut socket, _) = listener.accept().await.unwrap();
+        let dir = dir.clone();
         tokio::spawn(async move {
-            process_stream(&mut socket).await;
+            process_stream(&mut socket, dir).await;
         });
     }
 }
 
-fn process_request(data: &str) -> String {
+async fn process_request(data: &str, dir: Option<String>) -> String {
     let raw_request: Vec<_> = data.split("\r\n").filter(|x| !x.is_empty()).collect();
 
     if raw_request.is_empty() {
@@ -97,24 +105,47 @@ fn process_request(data: &str) -> String {
         return "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string();
     }
 
-    if request.path.starts_with("/echo/") {
-        let data = request.path.strip_prefix("/echo/").unwrap();
-        format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", data.len(), data.clone())
-    } else if request.path == "/user-agent" {
-        let user_agent = request.headers.get("User-Agent").unwrap();
-        format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", user_agent.len(), user_agent.clone())
-    } else if request.path == "/" {
-        "HTTP/1.1 200 OK\r\n\r\n200 OK".to_string()
-    } else {
-        "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
+    match (request.verb, request.path.as_str()) {
+        (Verb::Get, "/") => {
+            "HTTP/1.1 200 OK\r\n\r\n200 OK".to_string()
+        },
+        (Verb::Get, "/user-agent") => {
+            let user_agent = request.headers.get("User-Agent").unwrap();
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", user_agent.len(), user_agent.clone())
+        },
+        (Verb::Get, echo_path) if echo_path.starts_with("/echo/") => {
+            let data = request.path.strip_prefix("/echo/").unwrap();
+            format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}", data.len(), data.clone())
+        }
+        (Verb::Get, file_path) if file_path.starts_with("/files") => {
+            let file_name = request.path.strip_prefix("/files/").unwrap();
+            if let Some(dir) = dir {
+                let file_path = PathBuf::from_iter([dir.as_str(), file_name].iter());
+                match File::open(file_path).await {
+                    Ok(mut file) => {
+                        let mut buff = String::new();
+                        file.read_to_string(&mut buff).await.unwrap();
+                        format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}", buff.len(), buff.clone())
+                    },
+                        Err(_) => {
+                        "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
+                    }
+                }
+            } else {
+                "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
+            }
+        }
+        _ => {
+            "HTTP/1.1 404 Not Found\r\n\r\n404 Not Found".to_string()
+        }
     }
 }
 
-async fn process_stream(stream: &mut TcpStream) {
+async fn process_stream(stream: &mut TcpStream, dir: Option<String>) {
     let mut buff = [0; 4096];
     let buff_len = stream.read(&mut buff).await.unwrap();
     let data = from_utf8(&buff[..buff_len]).unwrap();
-    let response = process_request(data);
+    let response = process_request(data, dir).await;
 
     stream.write(response.as_bytes()).await.unwrap();
 }
